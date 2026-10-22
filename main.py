@@ -1,7 +1,6 @@
 import os, json, asyncio, subprocess, random, glob, pathlib
 import requests, edge_tts
 
-GEMINI_KEY = os.environ["GEMINI_API_KEY"]
 VOICE = os.environ.get("VOICE", "en-US-AndrewNeural")
 W, H = 1280, 720
 OUT = pathlib.Path("out"); OUT.mkdir(exist_ok=True)
@@ -12,50 +11,40 @@ def run(cmd):
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
 
-def next_topic():
-    topics = [t.strip() for t in open("topics.txt", encoding="utf-8") if t.strip()]
+DEFAULT_TERMS = ["black hole", "galaxy", "deep space", "nebula", "universe", "stars", "spacecraft", "Hubble"]
+
+
+def next_script():
+    files = sorted(glob.glob("scripts/*.txt"))
     done = set()
     if os.path.exists("done.txt"):
         done = {t.strip() for t in open("done.txt", encoding="utf-8")}
-    for t in topics:
-        if t not in done:
-            return t
-    raise SystemExit("topics.txt-ல புது topic இல்ல. சேர்க்கவும்.")
+    for f in files:
+        if f not in done:
+            return f
+    raise SystemExit("scripts folder-ல புது script இல்ல. ஒரு .txt file சேர்க்கவும்.")
 
 
-def pick_model():
-    forced = os.environ.get("GEMINI_MODEL")
-    if forced:
-        return forced
-    r = requests.get("https://generativelanguage.googleapis.com/v1beta/models",
-                     params={"key": GEMINI_KEY, "pageSize": 200}, timeout=60)
-    r.raise_for_status()
-    names = [m["name"].split("/")[-1] for m in r.json().get("models", [])
-             if "generateContent" in m.get("supportedGenerationMethods", [])]
-    bad = ("lite", "image", "tts", "live", "audio", "embedding", "robotics", "computer", "gemma", "learnlm")
-    good = [n for n in names if "flash" in n and not any(b in n for b in bad)]
-    stable = [n for n in good if "preview" not in n and "exp" not in n]
-    pool = stable or good or names
-    if not pool:
-        raise SystemExit("Gemini model எதுவும் கிடைக்கல. API key சரியான்னு பாரு.")
-    model = sorted(pool)[-1]
-    print("Using model:", model)
-    return model
-
-
-def write_script(topic):
-    prompt = f"""Write a YouTube space explainer script about: {topic}.
-Style: curious, clear, dramatic hook in first sentence, no filler, about 900-1100 words,
-plain narration only (no stage directions, no headings).
-Return ONLY JSON: {{"title": "...", "narration": "...", "search_terms": ["6 to 8 short NASA video search terms"]}}"""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{pick_model()}:generateContent?key={GEMINI_KEY}"
-    r = requests.post(url, json={
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"responseMimeType": "application/json"},
-    }, timeout=180)
-    r.raise_for_status()
-    text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-    return json.loads(text)
+def read_script(path):
+    """File format:
+    TITLE: video title
+    KEYWORDS: black hole, quasar, galaxy
+    ---
+    narration text...
+    """
+    raw = open(path, encoding="utf-8").read()
+    if "---" in raw:
+        head, body = raw.split("---", 1)
+    else:
+        head, body = "", raw
+    title, terms = pathlib.Path(path).stem, []
+    for line in head.splitlines():
+        if line.upper().startswith("TITLE:"):
+            title = line.split(":", 1)[1].strip()
+        elif line.upper().startswith("KEYWORDS:"):
+            terms = [t.strip() for t in line.split(":", 1)[1].split(",") if t.strip()]
+    terms = terms + [title] + DEFAULT_TERMS
+    return {"title": title, "narration": body.strip(), "search_terms": terms}
 
 
 async def make_voice(text, path):
@@ -68,7 +57,7 @@ def duration(path):
     return float(out.strip())
 
 
-def find_nasa_clips(terms, max_clips=8):
+def find_nasa_clips(terms, max_clips=10):
     urls = []
     for term in terms:
         try:
@@ -132,9 +121,9 @@ def build_video(clips, total, voice_path, final_path):
 
 
 def main():
-    topic = next_topic()
-    print("Topic:", topic)
-    data = write_script(topic)
+    topic = next_script()
+    print("Script:", topic)
+    data = read_script(topic)
     (OUT / "title.txt").write_text(data["title"], encoding="utf-8")
     (OUT / "script.txt").write_text(data["narration"], encoding="utf-8")
 
