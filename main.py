@@ -2,7 +2,6 @@ import os, json, asyncio, subprocess, random, glob, pathlib
 import requests, edge_tts
 
 GEMINI_KEY = os.environ["GEMINI_API_KEY"]
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 VOICE = os.environ.get("VOICE", "en-US-AndrewNeural")
 W, H = 1280, 720
 OUT = pathlib.Path("out"); OUT.mkdir(exist_ok=True)
@@ -24,12 +23,32 @@ def next_topic():
     raise SystemExit("topics.txt-ல புது topic இல்ல. சேர்க்கவும்.")
 
 
+def pick_model():
+    forced = os.environ.get("GEMINI_MODEL")
+    if forced:
+        return forced
+    r = requests.get("https://generativelanguage.googleapis.com/v1beta/models",
+                     params={"key": GEMINI_KEY, "pageSize": 200}, timeout=60)
+    r.raise_for_status()
+    names = [m["name"].split("/")[-1] for m in r.json().get("models", [])
+             if "generateContent" in m.get("supportedGenerationMethods", [])]
+    bad = ("lite", "image", "tts", "live", "audio", "embedding", "robotics", "computer", "gemma", "learnlm")
+    good = [n for n in names if "flash" in n and not any(b in n for b in bad)]
+    stable = [n for n in good if "preview" not in n and "exp" not in n]
+    pool = stable or good or names
+    if not pool:
+        raise SystemExit("Gemini model எதுவும் கிடைக்கல. API key சரியான்னு பாரு.")
+    model = sorted(pool)[-1]
+    print("Using model:", model)
+    return model
+
+
 def write_script(topic):
     prompt = f"""Write a YouTube space explainer script about: {topic}.
 Style: curious, clear, dramatic hook in first sentence, no filler, about 900-1100 words,
 plain narration only (no stage directions, no headings).
 Return ONLY JSON: {{"title": "...", "narration": "...", "search_terms": ["6 to 8 short NASA video search terms"]}}"""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{pick_model()}:generateContent?key={GEMINI_KEY}"
     r = requests.post(url, json={
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"responseMimeType": "application/json"},
